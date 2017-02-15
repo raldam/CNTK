@@ -62,7 +62,7 @@ def mb_source(tmpdir, fileprefix, epoch_size=FULL_DATA_SWEEP):
         randomize=False, epoch_size=epoch_size)
     return mbs
 
-def trainer(device):
+def create_sample_model(device):
     in1 = input_variable(shape=(input_dim,))
     labels = input_variable(shape=(input_dim,))
     p = parameter(shape=(input_dim,), init=10, device=device)
@@ -73,14 +73,9 @@ def trainer(device):
     lr_per_sample = learning_rate_schedule([0.3, 0.2, 0.1, 0.0], UnitType.sample)
     learner = sgd(z.parameters, lr_per_sample)
     trainer = Trainer(z, (ce, errs), [learner])
-    return {
-        'trainer':trainer,
-        'input':in1,
-        'label':labels,
-        'model':z,
-        'criteria':(ce, errs),
-        'learners':[learner]
-    }
+#        'model':z,
+#        'criteria':(ce, errs),
+    return (trainer, in1, labels)
 
 
 class MockProgressWriter(cntk_py.ProgressWriter):
@@ -110,72 +105,77 @@ class MockProgressWriter(cntk_py.ProgressWriter):
 
 def test_session_sanity_check(tmpdir, device_id):
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training")
 
     input_map = {
-        t['input']: mbs.streams.features,
-        t['label']: mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
-    session = training_session(mbs, t['trainer'], minibatch_size_schedule(4), model_inputs_to_mb_source_mapping=input_map)
-    session.train(device)
+    c = TrainingSessionConfig(mb_source=mbs, input_vars_to_streams=input_map,
+                              mb_size_schedule=minibatch_size_schedule(4))
+
+    training_session(trainer=t, config=c).train(device)
 
 def test_session_max_samples(tmpdir, device_id):
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
-    session = training_session(mbs, t['trainer'], minibatch_size_schedule(4),
-                               model_inputs_to_mb_source_mapping=input_map, max_training_samples=20)
-    session.train(device)
+    c = TrainingSessionConfig(mb_source=mbs, input_vars_to_streams=input_map,
+                              mb_size_schedule=minibatch_size_schedule(4), max_samples=20)
 
-    assert(t['trainer'].total_number_of_samples_seen == 21)
+    training_session(trainer=t, config=c).train(device)
+    assert(t.total_number_of_samples_seen == 21)
 
 def test_session_cross_validation_at_end(tmpdir, device_id):
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
     mbs1 = mb_source(tmpdir, "cv")
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
     writer = MockProgressWriter(expected_cv=[[92, 25]])
-    session = training_session(mbs, t['trainer'], minibatch_size_schedule(4),
-                               model_inputs_to_mb_source_mapping=input_map,
-                               max_training_samples=20, cv_source=mbs1, progress_printer=[writer])
-    session.train(device)
+   
+    c=TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                            input_vars_to_streams=input_map, max_samples=20) \
+        .progress_printing(writer) \
+        .cross_validation(source=mbs1)
+    training_session(trainer=t, config=c).train(device)
 
-    assert(t['trainer'].total_number_of_samples_seen == 21)
+    assert(t.total_number_of_samples_seen == 21)
     assert(writer.cv_summary_counter == 1)
 
 def test_session_cross_validation_3_times(tmpdir, device_id):
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
     mbs1 = mb_source(tmpdir, "cv")
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
     writer = MockProgressWriter(expected_cv=[[92, 25], [92, 25], [92, 25]])
-    session = training_session(mbs, t['trainer'], minibatch_size_schedule(4),
-                               model_inputs_to_mb_source_mapping=input_map,
-                               max_training_samples=60, cv_source=mbs1, cv_frequency=20,
-                               cv_mb_size_schedule=minibatch_size_schedule(2), progress_printer=[writer])
-    session.train(device)
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams=input_map,
+                              max_samples=60) \
+        .cross_validation(source=mbs1, frequency=20, schedule=minibatch_size_schedule(2)) \
+        .progress_printing(writer) 
+    training_session(trainer=t, config=c).train(device)
 
-    assert(t['trainer'].total_number_of_samples_seen == 61)
+    assert(t.total_number_of_samples_seen == 61)
     assert(writer.cv_summary_counter == 3)
 
 
@@ -184,32 +184,27 @@ def test_session_cross_validation_3_times_checkpoints_2_save_all(tmpdir, device_
     from os.path import isfile, join
 
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
     mbs1 = mb_source(tmpdir, "cv")
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
     test_dir = str(tmpdir)
 
     writer = MockProgressWriter(expected_cv=[[92, 25], [92, 25], [92, 25]])
-    session = training_session(
-        training_minibatch_source = mbs,
-        trainer = t['trainer'],
-        mb_size_schedule = minibatch_size_schedule(4),
-        model_inputs_to_mb_source_mapping = input_map,
-        max_training_samples = 60,
-        cv_source = mbs1,
-        cv_frequency = 20,
-        progress_printer = [writer],
-        checkpoint_frequency = 35,
-        checkpoint_filename = str(tmpdir / "checkpoint_save_all"),
-        save_all_checkpoints = True)
 
-    session.train(device)
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams = input_map, max_samples = 60) \
+        .checkpointing(frequency = 35, filename=str(tmpdir/"checkpoint_save_all"),
+                       preserve_all=True) \
+        .cross_validation(source = mbs1, frequency = 20) \
+        .progress_printing(writer)
+    training_session(trainer=t, config=c).train(device) 
+
     candidates = [f for f in listdir(test_dir) if isfile(join(test_dir, f)) and f.startswith("checkpoint_save_all")]
 
     assert("checkpoint_save_all0" in candidates)
@@ -228,27 +223,22 @@ def test_session_progress_print(tmpdir, device_id):
     from os.path import isfile, join
 
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
     test_dir = str(tmpdir)
 
     writer = MockProgressWriter()
-    session = training_session(
-        training_minibatch_source = mbs,
-        trainer = t['trainer'],
-        mb_size_schedule = minibatch_size_schedule(4),
-        model_inputs_to_mb_source_mapping = input_map,
-        max_training_samples = 60,
-        progress_printer = [writer],
-        progress_frequency = 10)
 
-    session.train(device)
+    c = TrainingSessionConfig(mb_source = mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams = input_map, max_samples = 60) \
+        .progress_printing(writer, frequency=10)
+    training_session(trainer=t, config=c).train(device)
 
     assert(writer.training_summary_counter == 6)
 
@@ -258,15 +248,16 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
     from os.path import isfile, join
 
     device=cntk_device(device_id)
-    t = trainer(device)
+    (t, feature, label) = create_sample_model(device)
     mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
 
     input_map = {
-        t['input'] : mbs.streams.features,
-        t['label'] : mbs.streams.labels
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
     }
 
     test_dir = str(tmpdir)
+<<<<<<< HEAD
     writer = MockProgressWriter()
 
     session = training_session(
@@ -282,6 +273,18 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
         save_all_checkpoints = True)
 
     session.train(device)
+=======
+    printer = MockProgressPrinter(t)
+
+    c = TrainingSessionConfig(mb_source = mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams = input_map, 
+                              max_samples = 60) \
+        .checkpointing(frequency = 35, filename = str(tmpdir/"restart_from_checkpoint"),
+                       preserve_all = True) \
+        .progress_printing(printer, frequency = 35)
+    training_session(trainer=t, config=c).train(device)
+
+>>>>>>> Providing callback for cross validation
     candidates = [f for f in listdir(test_dir) if isfile(join(test_dir, f)) and f.startswith("restart_from_checkpoint")]
 
     assert("restart_from_checkpoint0" in candidates)
@@ -302,6 +305,7 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
         os.remove(str(tmpdir/f))
 
     # restoring from a particular checkpoint and again save everything from the second epoch
+<<<<<<< HEAD
     writer2 = MockProgressWriter(training_summary_counter=1)
     session = training_session(
         training_minibatch_source=mbs,
@@ -317,6 +321,19 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
         save_all_checkpoints=True)
 
     session.train(device)
+=======
+    printer2 = MockProgressPrinter(t, epoch_summary_counter=1)
+
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4),
+                              input_vars_to_streams = input_map, 
+                              max_samples=60) \
+        .checkpointing(frequency=35, filename = str(tmpdir/"saved_restart_from_checkpoint0"),
+                           restore=True, preserve_all=True) \
+        .progress_printing(printer=printer2, frequency = 35)
+
+    training_session(trainer=t, config=c).train(device)
+
+>>>>>>> Providing callback for cross validation
     candidates = [f for f in listdir(test_dir) if isfile(join(test_dir, f)) and f.startswith("saved_restart_from_checkpoint0")]
 
     assert("saved_restart_from_checkpoint00" not in candidates)
@@ -329,6 +346,101 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
     assert("saved_restart_from_checkpoint0.ckp" in candidates)
 
     # remove information about 0 epoch from the mock printer
+<<<<<<< HEAD
     first_run_minibatch_info = [i for i in writer.minibatch_info if i[0] != 0]
 
     assert(first_run_minibatch_info == writer2.minibatch_info)
+=======
+    first_run_minibatch_info = [i for i in printer.minibatch_info if i[0] != 0]
+    
+    assert(first_run_minibatch_info == printer2.minibatch_info)
+
+
+def test_session_cv_callback_3_times(tmpdir, device_id):
+
+    device=cntk_device(device_id)
+    (t, feature, label) = create_sample_model(device)
+    mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
+
+    input_map = {
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
+    }
+
+    counter = [0]
+    def cv_callback(index, average_error, num_samples, num_mb):
+        assert(counter[0] == index)
+        assert average_error == 0
+        assert num_samples == 0
+        assert num_mb == 0
+        counter[0] += 1
+        return True
+
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams=input_map, max_samples=60) \
+        .cross_validation(frequency=20, callback=cv_callback)
+
+    training_session(trainer=t, config=c).train(device)
+    assert counter == [3]
+
+def test_session_cv_callback_with_cross_validation_3_times(tmpdir, device_id):
+    device=cntk_device(device_id)
+    (t, feature, label) = create_sample_model(device)
+    mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
+    cv_mbs = mb_source(tmpdir, "cv")
+
+    input_map = {
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
+    }
+
+    def cv_callback(index, average_error, num_samples, num_mb):
+        initial_position = cv_mbs.current_position
+        total_error = 0
+        while True:
+           mb = cv_mbs.next_minibatch(2, input_map=input_map)
+           if not mb: break
+           mb_error = t.test_minibatch(mb, device)
+           total_error += mb_error * mb[label].num_samples
+
+        total_samples = 25 # Please see input data
+        assert((total_error * 100) / total_samples == 92)
+        cv_mbs.current_position = initial_position
+        return True
+
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams=input_map, max_samples=60) \
+        .cross_validation(frequency=20, callback=cv_callback)
+
+    training_session(trainer=t, config=c).train(device)
+    assert(t.total_number_of_samples_seen == 61)
+
+
+def test_session_cv_callback_early_exit(tmpdir, device_id):
+
+    device=cntk_device(device_id)
+    (t, feature, label) = create_sample_model(device)
+    mbs = mb_source(tmpdir, "training", epoch_size=INFINITELY_REPEAT)
+
+    input_map = {
+        feature : mbs.streams.features,
+        label : mbs.streams.labels
+    }
+
+    counter = [0]
+    def cv_callback(index, average_error, num_samples, num_mb):
+        assert(counter[0] == index)
+        assert average_error == 0
+        assert num_samples == 0
+        assert num_mb == 0
+        counter[0] += 1
+        return counter[0] < 1 
+
+    c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4), 
+                              input_vars_to_streams=input_map, 
+                              max_samples=60) \
+        .cross_validation(frequency=20, callback=cv_callback)
+
+    training_session(trainer=t, config=c).train(device)
+    assert counter == [1]
+>>>>>>> Providing callback for cross validation
