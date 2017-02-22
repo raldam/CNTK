@@ -79,7 +79,6 @@ class TrainingSessionConfig(cntk_py.TrainingSessionConfig):
     def __init__(self, mb_source, mb_size_schedule,
                  input_vars_to_streams, max_samples=None):
 
-        self.progress_printer = None
         self.cv_callback = None
 
         if max_samples is None:
@@ -162,7 +161,6 @@ class TrainingSessionConfig(cntk_py.TrainingSessionConfig):
             writers (list): progress writers
             frequency (int): frequency in samples for aggregated progress printing
         '''
-        self.progress_printer = printer
 
         if frequency is None:
             frequency = sys.maxsize

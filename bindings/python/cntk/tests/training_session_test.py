@@ -257,34 +257,16 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
     }
 
     test_dir = str(tmpdir)
-<<<<<<< HEAD
     writer = MockProgressWriter()
-
-    session = training_session(
-        training_minibatch_source = mbs,
-        trainer = t['trainer'],
-        mb_size_schedule = minibatch_size_schedule(4),
-        model_inputs_to_mb_source_mapping = input_map,
-        max_training_samples = 60,
-        checkpoint_frequency = 35,
-        checkpoint_filename=str(tmpdir/"restart_from_checkpoint"),
-        progress_printer = [writer],
-        progress_frequency = 35,
-        save_all_checkpoints = True)
-
-    session.train(device)
-=======
-    printer = MockProgressPrinter(t)
 
     c = TrainingSessionConfig(mb_source = mbs, mb_size_schedule=minibatch_size_schedule(4), 
                               input_vars_to_streams = input_map, 
                               max_samples = 60) \
         .checkpointing(frequency = 35, filename = str(tmpdir/"restart_from_checkpoint"),
                        preserve_all = True) \
-        .progress_printing(printer, frequency = 35)
+        .progress_printing(writer, frequency = 35)
     training_session(trainer=t, config=c).train(device)
 
->>>>>>> Providing callback for cross validation
     candidates = [f for f in listdir(test_dir) if isfile(join(test_dir, f)) and f.startswith("restart_from_checkpoint")]
 
     assert("restart_from_checkpoint0" in candidates)
@@ -305,35 +287,17 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
         os.remove(str(tmpdir/f))
 
     # restoring from a particular checkpoint and again save everything from the second epoch
-<<<<<<< HEAD
     writer2 = MockProgressWriter(training_summary_counter=1)
-    session = training_session(
-        training_minibatch_source=mbs,
-        trainer=Trainer(t['model'], t['criteria'], t['learners']),
-        mb_size_schedule=minibatch_size_schedule(4),
-        model_inputs_to_mb_source_mapping=input_map,
-        progress_printer=[writer2],
-        checkpoint_frequency=35,
-        progress_frequency=35,
-        max_training_samples=60,
-        checkpoint_filename=str(tmpdir/"saved_restart_from_checkpoint0"),
-        restore=True,
-        save_all_checkpoints=True)
-
-    session.train(device)
-=======
-    printer2 = MockProgressPrinter(t, epoch_summary_counter=1)
 
     c = TrainingSessionConfig(mb_source=mbs, mb_size_schedule=minibatch_size_schedule(4),
                               input_vars_to_streams = input_map, 
                               max_samples=60) \
         .checkpointing(frequency=35, filename = str(tmpdir/"saved_restart_from_checkpoint0"),
-                           restore=True, preserve_all=True) \
-        .progress_printing(printer=printer2, frequency = 35)
+                       restore=True, preserve_all=True) \
+        .progress_printing(writers=writer2, frequency = 35)
 
     training_session(trainer=t, config=c).train(device)
 
->>>>>>> Providing callback for cross validation
     candidates = [f for f in listdir(test_dir) if isfile(join(test_dir, f)) and f.startswith("saved_restart_from_checkpoint0")]
 
     assert("saved_restart_from_checkpoint00" not in candidates)
@@ -346,15 +310,9 @@ def test_session_restart_from_checkpoint(tmpdir, device_id):
     assert("saved_restart_from_checkpoint0.ckp" in candidates)
 
     # remove information about 0 epoch from the mock printer
-<<<<<<< HEAD
     first_run_minibatch_info = [i for i in writer.minibatch_info if i[0] != 0]
 
     assert(first_run_minibatch_info == writer2.minibatch_info)
-=======
-    first_run_minibatch_info = [i for i in printer.minibatch_info if i[0] != 0]
-    
-    assert(first_run_minibatch_info == printer2.minibatch_info)
-
 
 def test_session_cv_callback_3_times(tmpdir, device_id):
 
@@ -443,4 +401,3 @@ def test_session_cv_callback_early_exit(tmpdir, device_id):
 
     training_session(trainer=t, config=c).train(device)
     assert counter == [1]
->>>>>>> Providing callback for cross validation
